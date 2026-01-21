@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Rechnung Datenauslesung">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Rechnung Datenauslesung</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Tesseract.js for OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+  
+  <!-- PDF.js for PDF rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  </script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+    }
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // Helper function to extract text from PDF using PDF.js and Tesseract
+    window.extractTextFromPdf = function(pdfDataUrl, callback) {
+      try {
+        // Convert base64 data URL to Uint8Array
+        const base64 = pdfDataUrl.split(',')[1];
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        pdfjsLib.getDocument({data: bytes}).promise.then(function(pdf) {
+          var allText = [];
+          var pagesToProcess = Math.min(pdf.numPages, 3);
+          var pagePromises = [];
+
+          for (var i = 1; i <= pagesToProcess; i++) {
+            (function(pageNum) { // IIFE to capture pageNum
+              pagePromises.push(
+                pdf.getPage(pageNum).then(function(page) {
+                  var viewport = page.getViewport({scale: 2.0});
+                  var canvas = document.createElement('canvas');
+                  canvas.width = viewport.width;
+                  canvas.height = viewport.height;
+                  var context = canvas.getContext('2d');
+
+                  return page.render({
+                    canvasContext: context,
+                    viewport: viewport
+                  }).promise.then(function() {
+                    return canvas.toDataURL('image/png');
+                  });
+                }).then(function(imageDataUrl) {
+                  return Tesseract.recognize(imageDataUrl, 'deu+eng').then(function(result) {
+                    return result.data.text;
+                  });
+                })
+              );
+            })(i);
+          }
+
+          Promise.all(pagePromises).then(function(texts) {
+            callback(null, texts.join('\n\n'));
+          }).catch(function(error) {
+            callback(error.toString(), null);
+          });
+        }).catch(function(error) {
+          callback(error.toString(), null);
+        });
+      } catch (e) {
+        callback(e.toString(), null);
+      }
+    };
+
+    // Helper function to extract text from PDF using PDF.js and Google Vision API
+    window.extractTextFromPdfWithVisionAI = function(pdfDataUrl, apiKey, callback) {
+      try {
+        // Convert base64 data URL to Uint8Array
+        const base64 = pdfDataUrl.split(',')[1];
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        pdfjsLib.getDocument({data: bytes}).promise.then(function(pdf) {
+          var pagesToProcess = Math.min(pdf.numPages, 3);
+          var pagePromises = [];
+
+          for (var i = 1; i <= pagesToProcess; i++) {
+            (function(pageNum) { // IIFE to capture pageNum
+              pagePromises.push(
+                pdf.getPage(pageNum).then(function(page) {
+                  var viewport = page.getViewport({scale: 2.0});
+                  var canvas = document.createElement('canvas');
+                  canvas.width = viewport.width;
+                  canvas.height = viewport.height;
+                  var context = canvas.getContext('2d');
+
+                  return page.render({
+                    canvasContext: context,
+                    viewport: viewport
+                  }).promise.then(function() {
+                    // Convert canvas to base64 image
+                    const imageDataUrl = canvas.toDataURL('image/png');
+                    const base64Image = imageDataUrl.split(',')[1];
+                    
+                    // Send to Google Vision API
+                    const requestBody = {
+                      requests: [{
+                        image: {
+                          content: base64Image
+                        },
+                        features: [{
+                          type: 'TEXT_DETECTION',
+                          maxResults: 10
+                        }]
+                      }]
+                    };
+
+                    return fetch('https://vision.googleapis.com/v1/images:annotate?key=' + apiKey, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify(requestBody)
+                    }).then(function(response) {
+                      return response.json();
+                    }).then(function(data) {
+                      if (data.error) {
+                        throw new Error(data.error.message || 'Vision API error');
+                      }
+                      const textAnnotations = data.responses && data.responses[0] && data.responses[0].textAnnotations;
+                      if (textAnnotations && textAnnotations.length > 0) {
+                        return textAnnotations[0].description || '';
+                      }
+                      return '';
+                    });
+                  });
+                })
+              );
+            })(i);
+          }
+
+          Promise.all(pagePromises).then(function(texts) {
+            callback(null, texts.join('\n\n'));
+          }).catch(function(error) {
+            callback(error.toString(), null);
+          });
+        }).catch(function(error) {
+          callback(error.toString(), null);
+        });
+      } catch (e) {
+        callback(e.toString(), null);
+      }
+    };
+  </script>
+
+  <script>
+    var serviceWorkerVersion = '{{flutter_service_worker_version}}';
+    var scriptLoaded = false;
+    function loadMainDartJs() {
+      if (scriptLoaded) {
+        return;
+      }
+      scriptLoaded = true;
+      var scriptTag = document.createElement('script');
+      scriptTag.src = 'main.dart.js';
+      scriptTag.type = 'application/javascript';
+      document.body.append(scriptTag);
+    }
+
+    if ('serviceWorker' in navigator) {
+      // Service workers are supported. Use them.
+      window.addEventListener('load', function () {
+        // Wait for registration to finish before dropping the <script> tag.
+        // Otherwise, the browser will load the script multiple times,
+        // potentially different versions.
+        var serviceWorkerUrl = 'flutter_service_worker.js?v=' + serviceWorkerVersion;
+        navigator.serviceWorker.register(serviceWorkerUrl)
+          .then((reg) => {
+            function waitForActivation(serviceWorker) {
+              serviceWorker.addEventListener('statechange', function () {
+                if (serviceWorker.state == 'activated') {
+                  console.log('Installed new service worker.');
+                  loadMainDartJs();
+                }
+              });
+            }
+            if (!reg.active && (reg.installing || reg.waiting)) {
+              // No active web worker and we have installed or are installing
+              // one for the first time. Simply wait for it to activate.
+              waitForActivation(reg.installing || reg.waiting);
+            } else if (reg.active) {
+              if (reg.active.scriptURL.indexOf(serviceWorkerVersion) != -1) {
+                // When the app updates the serviceWorkerVersion changes, so we
+                // need to check if the scriptURL matches the current version.
+                // If it does, then we can skip waiting.
+                console.log('Service worker is already active.');
+                loadMainDartJs();
+              } else {
+                // When the app updates the serviceWorkerVersion changes, so we
+                // need to check if the scriptURL matches the current version.
+                // If it doesn't, then we need to wait for the new service worker
+                // to activate before loading the app.
+                waitForActivation(reg.installing || reg.waiting);
+              }
+            }
+          });
+
+        // If service worker doesn't succeed in a given amount of time,
+        // fallback to loading the app without a service worker.
+        setTimeout(function () {
+          if (!scriptLoaded) {
+            console.warn(
+              'Failed to load service worker. Falling back to plain <script> tag.',
+            );
+            loadMainDartJs();
+          }
+        }, 4000);
+      });
+    } else {
+      // Service workers not supported. Just drop the <script> tag.
+      loadMainDartJs();
+    }
+  </script>
+</body>
+</html>
+
